@@ -1,0 +1,187 @@
+// ============================================================================
+// Right Shifter with Rounding and Saturation
+// ----------------------------------------------------------------------------
+// This module performs:
+//
+// 1. Arithmetic right shift of a signed input value.
+// 2. Round-to-nearest operation.
+// 3. Saturation to the target output width.
+//
+// Typical usage:
+//   - Quantization after MAC accumulation
+//   - Fixed-point scaling
+//   - Neural network inference accelerators
+//
+// Example:
+//   data_in = 12345
+//   shift   = 4
+//
+//   output = round(data_in / 16)
+//
+// ============================================================================
+module right_shifter
+#(
+    parameter before_data_width = 32,     // Input data width
+    parameter after_data_width  = 8,      // Output data width
+    parameter shift_width       = 5       // Width of shift amount
+)
+(
+    shift,
+    data_in,
+    data_out
+);
+
+// --------------------------------------------------------------------------
+// Inputs / Outputs
+// --------------------------------------------------------------------------
+
+// Number of bits to shift right
+input wire [shift_width-1:0] shift;
+
+// Signed input value
+input wire signed [before_data_width-1:0] data_in;
+
+// Quantized output value
+output reg signed [after_data_width-1:0] data_out;
+
+// --------------------------------------------------------------------------
+// Internal Signals
+// --------------------------------------------------------------------------
+
+// Arithmetic right shift result
+wire signed [before_data_width-1:0] temp1_out;
+
+// Rounded result
+wire signed [before_data_width-1:0] temp2_out;
+
+// --------------------------------------------------------------------------
+// Arithmetic right shift
+//
+// Example:
+//   10110000 >>> 3
+//
+// Sign bit is preserved.
+// --------------------------------------------------------------------------
+assign temp1_out = data_in >>> shift;
+
+// --------------------------------------------------------------------------
+// Round-to-nearest
+//
+// Check the highest discarded bit:
+//
+// If discarded MSB = 1
+//      add 1 to shifted value
+//
+// Example:
+//   25 >> 2 = 6
+//   discarded bits = 01
+//   round result = 6
+//
+//   27 >> 2 = 6
+//   discarded bits = 11
+//   round result = 7
+// --------------------------------------------------------------------------
+assign temp2_out =
+    data_in[shift-1] ?
+    temp1_out + 1 :
+    temp1_out;
+
+// --------------------------------------------------------------------------
+// Overflow / Underflow Detection
+//
+// Detect whether shifted value exceeds the range representable
+// by after_data_width bits.
+// --------------------------------------------------------------------------
+
+// Negative overflow (below minimum representable value)
+wire under_min =
+    temp2_out[before_data_width-1] &
+    (~(&temp2_out[before_data_width-2:after_data_width-1]));
+
+// Positive overflow (above maximum representable value)
+wire over_max =
+    (~temp2_out[before_data_width-1]) &
+    (|temp2_out[before_data_width-2:after_data_width-1]);
+
+// --------------------------------------------------------------------------
+// Special overflow detection when shift = 0
+//
+// No shifting occurs, therefore overflow must be checked
+// directly on the input value.
+// --------------------------------------------------------------------------
+wire under_min_S0 =
+    data_in[before_data_width-1] &
+    (~(&data_in[before_data_width-2:after_data_width-1]));
+
+wire over_max_S0 =
+    (~data_in[before_data_width-1]) &
+    (|data_in[before_data_width-2:after_data_width-1]);
+
+// --------------------------------------------------------------------------
+// Saturation Logic
+//
+// Output range for signed N-bit number:
+//
+// Min = 1000...000
+// Max = 0111...111
+//
+// If value exceeds range:
+//   Saturate to min/max.
+//
+// Otherwise:
+//   Output quantized value.
+// --------------------------------------------------------------------------
+always @(*) begin
+
+    // --------------------------------------------------------------
+    // No shift case
+    // --------------------------------------------------------------
+    if(shift == 0)
+
+        case ({under_min_S0, over_max_S0})
+
+            // Saturate to minimum value
+            2'b10:
+                data_out =
+                    {1'b1,{(after_data_width-1){1'b0}}};
+
+            // Saturate to maximum value
+            2'b01:
+                data_out =
+                    {1'b0,{(after_data_width-1){1'b1}}};
+
+            // No overflow
+            default:
+                data_out = data_in;
+
+        endcase
+
+    // --------------------------------------------------------------
+    // Shift + Round + Saturate
+    // --------------------------------------------------------------
+    else begin
+
+        case ({under_min, over_max})
+
+            // Negative overflow
+            2'b10:
+                data_out =
+                    {1'b1,{(after_data_width-1){1'b0}}};
+
+            // Positive overflow
+            2'b01:
+                data_out =
+                    {1'b0,{(after_data_width-1){1'b1}}};
+
+            // Normal result
+            default:
+                data_out =
+                    temp2_out[after_data_width-1:0];
+
+        endcase
+
+    end
+
+end
+
+endmoduleright_shifter
